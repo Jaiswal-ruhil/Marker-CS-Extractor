@@ -7,9 +7,12 @@ on:
     branches: [main]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build-macos:
-    runs-on: macos-latest
+    runs-on: macos-15
 
     steps:
       - name: Checkout repository
