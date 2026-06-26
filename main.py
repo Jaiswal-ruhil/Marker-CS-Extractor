@@ -35,6 +35,21 @@ def is_total_row(vals: list[str], sl_idx: int | None) -> bool:
             return True
     return False
 
+
+
+def find_invoice_numbers(page):
+    """Return all invoice numbers found on a page."""
+    txt = page.extract_text() or ""
+    pattern = re.compile(
+        r'(?i)(?:invoice\s*(?:no|number)?|inv\.?\s*no\.?|bill\s*no\.?|document\s*no\.?)\s*[:#-]?\s*([A-Z0-9\-/]+)'
+    )
+    nums = []
+    for m in pattern.finditer(txt):
+        n=m.group(1).strip()
+        if n not in nums:
+            nums.append(n)
+    return nums
+
 def extract_from_pdf(pdf_path: Path, log, on_page=None):
     rows_out = []
 
@@ -44,6 +59,7 @@ def extract_from_pdf(pdf_path: Path, log, on_page=None):
             if on_page:
                 on_page(page_num, total_pages)
 
+            page_invoices = find_invoice_numbers(page)
             tables = page.extract_tables()
             for table in tables:
                 if not table or len(table) < 2:
@@ -81,6 +97,7 @@ def extract_from_pdf(pdf_path: Path, log, on_page=None):
                             "UPC":         vals[upc_idx]  if upc_idx  is not None else "",
                             "MRP":         vals[mrp_idx]  if mrp_idx  is not None else "",
                             "CS":          cs,
+                            "Invoices":   ", ".join(page_invoices),
                         })
 
     log(f"  → {len(rows_out)} rows in {pdf_path.name}")
@@ -116,13 +133,15 @@ def process(pdfs, log=print, on_progress=None, save_path=None):
               **{
                   "Pages": ("Page Number",
                             lambda s: ", ".join(str(p) for p in sorted(s.unique()))),
+                  "Invoices": ("Invoices",
+                            lambda s: ", ".join(sorted({i.strip() for v in s for i in v.split(",") if i.strip()}))),
                   "CS": ("CS", "sum"),
               }
           )
     )
     log(f"  → merged {before} rows → {len(df)} unique products")
 
-    df = df[["Source PDF", "Pages", "Product Name", "UPC", "MRP", "CS"]]
+    df = df[["Source PDF", "Pages", "Invoices", "Product Name", "UPC", "MRP", "CS"]]
     if save_path is None:
         default_name = (
             pdfs[0].stem + "_CS_Extract.xlsx"
