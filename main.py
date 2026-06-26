@@ -6,6 +6,8 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 CS_NAMES = {"cs", "c/s", "case", "cases", "case qty", "case quantity"}
+SL_NAMES = {"sl", "sl.", "s.no", "sno", "sr", "sr.", "no", "no.", "#", "item"}
+TOTAL_KEYWORDS = {"total", "sub total", "subtotal", "grand total"}
 
 # ── Core logic ────────────────────────────────────────────────────────────────
 
@@ -15,6 +17,23 @@ def find_cs(headers):
         if n in CS_NAMES:
             return i
     return None
+
+def find_sl(headers):
+    for i, h in enumerate(headers):
+        n = h.lower().strip().replace(".", "").replace("_", " ")
+        if n in SL_NAMES:
+            return i
+    return None
+
+def is_total_row(vals: list[str], sl_idx: int | None) -> bool:
+    # Total rows have an empty SL column
+    if sl_idx is not None and not vals[sl_idx].strip():
+        return True
+    # Or a cell literally says "total"
+    for v in vals:
+        if v.lower().strip() in TOTAL_KEYWORDS:
+            return True
+    return False
 
 def extract_from_pdf(pdf_path: Path, log, on_page=None):
     rows_out = []
@@ -32,11 +51,14 @@ def extract_from_pdf(pdf_path: Path, log, on_page=None):
                 cs_idx = find_cs(headers)
                 if cs_idx is None:
                     continue
+                sl_idx = find_sl(headers)
                 for row in table[1:]:
                     if not row:
                         continue
                     vals = [str(c).strip() if c else "" for c in row]
                     vals.extend([""] * (len(headers) - len(vals)))
+                    if is_total_row(vals, sl_idx):
+                        continue
                     rec = dict(zip(headers, vals))
                     try:
                         cs = float(str(rec[headers[cs_idx]]).replace(",", ""))
