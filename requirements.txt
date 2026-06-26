@@ -1,3 +1,5 @@
 pdfplumber
 pandas
 openpyxl
+reportlab
+pyinstaller

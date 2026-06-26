@@ -8,6 +8,12 @@ import pdfplumber
 import pandas as pd
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
+from reportlab.lib.pagesizes import A4, landscape
+from reportlab.lib import colors
+from reportlab.lib.units import mm
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.enums import TA_LEFT, TA_CENTER
 
 CS_NAMES = {"cs", "c/s", "case", "cases", "case qty", "case quantity"}
 SL_NAMES = {"sl", "sl.", "s.no", "sno", "sr", "sr.", "no", "no.", "#", "item"}
@@ -75,7 +81,7 @@ def extract_from_pdf(pdf_path: Path, log, on_page=None):
                         continue
                     try:
                         cs = float(vals[cs_idx].replace(",", ""))
-                    except (ValueError, AttributeError):
+                    except:
                         cs = 0
                     if cs > 0:
                         rows_out.append({
@@ -90,7 +96,7 @@ def extract_from_pdf(pdf_path: Path, log, on_page=None):
     log(f"  → {len(rows_out)} rows in {pdf_path.name}")
     return rows_out
 
-def process(pdfs, log=print, on_progress=None, save_path=None):
+def process(pdfs, log=print, on_progress=None, save_path=None, fmt="xlsx"):
     total = len(pdfs)
     all_rows = []
     for idx, pdf in enumerate(pdfs):
@@ -107,7 +113,8 @@ def process(pdfs, log=print, on_progress=None, save_path=None):
         log("No CS rows found.")
         return None
     if on_progress:
-        on_progress(100, "Saving spreadsheet…")
+        label = "Saving PDF…" if fmt == "pdf" else "Saving spreadsheet…"
+        on_progress(100, label)
     df = pd.DataFrame(all_rows, columns=["Source PDF", "Page Number", "Product Name", "UPC", "MRP", "CS"])
 
     df["MRP"] = pd.to_numeric(df["MRP"].astype(str).str.replace(",", "", regex=False), errors="coerce")
@@ -128,24 +135,118 @@ def process(pdfs, log=print, on_progress=None, save_path=None):
 
     df = df[["Source PDF", "Pages", "Product Name", "UPC", "MRP", "CS"]]
     if save_path is None:
-        default_name = (
-            pdfs[0].stem + "_CS_Extract.xlsx"
-            if len(pdfs) == 1
-            else "Combined_CS_Extract.xlsx"
-        )
-        save_path = filedialog.asksaveasfilename(
-            title="Save Excel File",
-            defaultextension=".xlsx",
-            initialfile=default_name,
-            filetypes=[("Excel Workbook", "*.xlsx")]
-        )
+        if fmt == "pdf":
+            default_name = (
+                pdfs[0].stem + "_CS_Extract.pdf"
+                if len(pdfs) == 1
+                else "Combined_CS_Extract.pdf"
+            )
+            save_path = filedialog.asksaveasfilename(
+                title="Save PDF Report",
+                defaultextension=".pdf",
+                initialfile=default_name,
+                filetypes=[("PDF Document", "*.pdf")]
+            )
+        else:
+            default_name = (
+                pdfs[0].stem + "_CS_Extract.xlsx"
+                if len(pdfs) == 1
+                else "Combined_CS_Extract.xlsx"
+            )
+            save_path = filedialog.asksaveasfilename(
+                title="Save Excel File",
+                defaultextension=".xlsx",
+                initialfile=default_name,
+                filetypes=[("Excel Workbook", "*.xlsx")]
+            )
         if not save_path:
             log("⚠ Save cancelled.")
             return None
     outfile = Path(save_path)
-    df.to_excel(outfile, index=False)
+    if fmt == "pdf":
+        source_names = [p.name for p in pdfs]
+        save_as_pdf(df, outfile, source_names)
+    else:
+        df.to_excel(outfile, index=False)
     log(f"✓  Saved → {outfile.resolve()}")
     return outfile
+
+def save_as_pdf(df, outfile, source_names):
+    from reportlab.lib.pagesizes import A4, landscape
+    from reportlab.lib import colors
+    from reportlab.lib.units import mm
+    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.enums import TA_LEFT
+
+    doc = SimpleDocTemplate(
+        str(outfile),
+        pagesize=landscape(A4),
+        leftMargin=15*mm, rightMargin=15*mm,
+        topMargin=15*mm, bottomMargin=15*mm,
+    )
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle("title", parent=styles["Normal"],
+                                 fontSize=14, fontName="Helvetica-Bold",
+                                 textColor=colors.HexColor("#6c63ff"),
+                                 spaceAfter=4)
+    sub_style   = ParagraphStyle("sub", parent=styles["Normal"],
+                                 fontSize=8, fontName="Helvetica",
+                                 textColor=colors.HexColor("#7a7a94"),
+                                 spaceAfter=10)
+    cell_style  = ParagraphStyle("cell", parent=styles["Normal"],
+                                 fontSize=8, fontName="Helvetica",
+                                 leading=10)
+
+    elements = [
+        Paragraph("CS Extractor — Output Report", title_style),
+        Paragraph("Sources: " + ", ".join(source_names), sub_style),
+    ]
+
+    col_names = list(df.columns)
+    header_row = [Paragraph("<b>" + c + "</b>", cell_style) for c in col_names]
+    data_rows = [
+        [Paragraph("" if str(v) == "nan" else str(v), cell_style) for v in row]
+        for row in df.itertuples(index=False)
+    ]
+    table_data = [header_row] + data_rows
+
+    page_w = landscape(A4)[0] - 30*mm
+    col_ratios = [0.14, 0.07, 0.34, 0.14, 0.10, 0.08]
+    col_widths = [page_w * r for r in col_ratios]
+
+    tbl = Table(table_data, colWidths=col_widths, repeatRows=1)
+    tbl.setStyle(TableStyle([
+        ("BACKGROUND",     (0, 0), (-1, 0),  colors.HexColor("#6c63ff")),
+        ("TEXTCOLOR",      (0, 0), (-1, 0),  colors.white),
+        ("FONTNAME",       (0, 0), (-1, 0),  "Helvetica-Bold"),
+        ("FONTSIZE",       (0, 0), (-1, 0),  8),
+        ("BOTTOMPADDING",  (0, 0), (-1, 0),  6),
+        ("TOPPADDING",     (0, 0), (-1, 0),  6),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1),
+         [colors.HexColor("#ffffff"), colors.HexColor("#f0f0f8")]),
+        ("FONTNAME",       (0, 1), (-1, -1), "Helvetica"),
+        ("FONTSIZE",       (0, 1), (-1, -1), 8),
+        ("TOPPADDING",     (0, 1), (-1, -1), 4),
+        ("BOTTOMPADDING",  (0, 1), (-1, -1), 4),
+        ("GRID",           (0, 0), (-1, -1), 0.25, colors.HexColor("#ccccdd")),
+        ("LINEBELOW",      (0, 0), (-1, 0),  1,    colors.HexColor("#5a52d5")),
+        ("VALIGN",         (0, 0), (-1, -1), "MIDDLE"),
+    ]))
+
+    elements.append(tbl)
+    elements.append(Spacer(1, 6*mm))
+    total_cs = df["CS"].sum()
+    elements.append(Paragraph(
+        "Total products: " + str(len(df)) + "  ·  Total CS: " + str(int(total_cs)),
+        ParagraphStyle("footer", parent=styles["Normal"],
+                       fontSize=8, fontName="Helvetica",
+                       textColor=colors.HexColor("#7a7a94"),
+                       alignment=TA_LEFT)
+    ))
+    doc.build(elements)
+
+
 
 # ── Palette ───────────────────────────────────────────────────────────────────
 
@@ -170,6 +271,7 @@ class App(tk.Tk):
         self.resizable(False, False)
         self.configure(bg=BG)
         self._files: list[str] = []
+        self._fmt_var = tk.StringVar(value="xlsx")
         self._build_ui()
         self.update_idletasks()
         self.geometry(f"520x{self.winfo_reqheight()}")
@@ -181,6 +283,7 @@ class App(tk.Tk):
         self._build_dropzone()
         self._build_filelist()
         self._build_progress()
+        self._build_format_selector()
         self._build_actions()
         self._build_log()
 
@@ -261,9 +364,38 @@ class App(tk.Tk):
                                     anchor="w")
         self._status_lbl.pack(fill="x", pady=(4, 0))
 
+    def _build_format_selector(self):
+        fmt_frame = tk.Frame(self, bg=BG)
+        fmt_frame.pack(fill="x", padx=20, pady=(12, 0))
+
+        tk.Label(fmt_frame, text="Output format", font=("Segoe UI", 9),
+                 bg=BG, fg=MUTED).pack(side="left", padx=(0, 12))
+
+        for label, value in [("Excel (.xlsx)", "xlsx"), ("PDF Report", "pdf")]:
+            rb = tk.Radiobutton(
+                fmt_frame, text=label, variable=self._fmt_var, value=value,
+                font=("Segoe UI", 10),
+                bg=BG, fg=TEXT,
+                activebackground=BG, activeforeground=ACCENT,
+                selectcolor=CARD,
+                relief="flat", cursor="hand2",
+                indicatoron=0,
+                padx=14, pady=5,
+                bd=0,
+            )
+            rb.pack(side="left", padx=(0, 6))
+            rb.bind("<Enter>",  lambda e, b=rb: b.configure(fg=ACCENT))
+            rb.bind("<Leave>",  lambda e, b=rb: b.configure(
+                fg=ACCENT if self._fmt_var.get() == b.cget("value") else TEXT))
+        self._fmt_var.trace_add("write", self._on_fmt_change)
+
+    def _on_fmt_change(self, *_):
+        # Visually highlight selected radio
+        pass
+
     def _build_actions(self):
         row = tk.Frame(self, bg=BG)
-        row.pack(fill="x", padx=20, pady=(12, 0))
+        row.pack(fill="x", padx=20, pady=(8, 0))
 
         self._run_btn = tk.Button(
             row, text="Extract CS data",
@@ -425,7 +557,8 @@ class App(tk.Tk):
         def worker():
             try:
                 outfile = process(pdfs, log=self._log_write,
-                                  on_progress=self._on_progress)
+                                  on_progress=self._on_progress,
+                                  fmt=self._fmt_var.get())
                 if outfile:
                     self.after(0, lambda: self._status_var.set(f"Done  ·  {outfile}"))
                     self.after(0, lambda: messagebox.showinfo(
