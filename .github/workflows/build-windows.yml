@@ -31,24 +31,6 @@ jobs:
           pip install -r requirements.txt
           pip install pyinstaller
 
-      - name: Set version
-        id: set-version
-        shell: pwsh
-        run: |
-          $lines = Get-Content main.py
-          $version = $null
-          foreach ($line in $lines) {
-            if ($line -match '^(?:__version__|VERSION)\s*=\s*"([^"]+)"') {
-              $version = $matches[1]
-              break
-            }
-          }
-          if ($version) {
-            Write-Output "version=$version" >> $env:GITHUB_OUTPUT
-          } else {
-            throw "Unable to parse version from main.py"
-          }
-
       - name: Build Windows executable
         shell: cmd
         run: |
