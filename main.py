@@ -37,11 +37,13 @@ def is_total_row(vals: list[str], sl_idx: int | None) -> bool:
 
 def extract_from_pdf(pdf_path: Path, log, on_page=None):
     rows_out = []
+
     with pdfplumber.open(pdf_path) as pdf:
         total_pages = len(pdf.pages)
         for page_num, page in enumerate(pdf.pages, 1):
             if on_page:
                 on_page(page_num, total_pages)
+
             tables = page.extract_tables()
             for table in tables:
                 if not table or len(table) < 2:
@@ -52,6 +54,14 @@ def extract_from_pdf(pdf_path: Path, log, on_page=None):
                 if cs_idx is None:
                     continue
                 sl_idx = find_sl(headers)
+
+                prod_idx = next((i for i, h in enumerate(headers)
+                                 if "product" in h.lower() and "name" in h.lower()), None)
+                upc_idx  = next((i for i, h in enumerate(headers)
+                                 if h.lower().strip().replace(".", "") in {"upc", "upc code", "barcode"}), None)
+                mrp_idx  = next((i for i, h in enumerate(headers)
+                                 if h.lower().strip().replace(".", "").replace(" ", "") in {"mrp", "mrp rs", "mrprs"}), None)
+
                 for row in table[1:]:
                     if not row:
                         continue
@@ -59,14 +69,20 @@ def extract_from_pdf(pdf_path: Path, log, on_page=None):
                     vals.extend([""] * (len(headers) - len(vals)))
                     if is_total_row(vals, sl_idx):
                         continue
-                    rec = dict(zip(headers, vals))
                     try:
-                        cs = float(str(rec[headers[cs_idx]]).replace(",", ""))
+                        cs = float(vals[cs_idx].replace(",", ""))
                     except:
                         cs = 0
                     if cs > 0:
-                        rec["Source PDF"] = pdf_path.name
-                        rows_out.append(rec)
+                        rows_out.append({
+                            "Source PDF":  pdf_path.name,
+                            "Page Number": page_num,
+                            "Product Name": vals[prod_idx] if prod_idx is not None else "",
+                            "UPC":         vals[upc_idx]  if upc_idx  is not None else "",
+                            "MRP":         vals[mrp_idx]  if mrp_idx  is not None else "",
+                            "CS":          cs,
+                        })
+
     log(f"  → {len(rows_out)} rows in {pdf_path.name}")
     return rows_out
 
@@ -88,43 +104,25 @@ def process(pdfs, log=print, on_progress=None):
         return None
     if on_progress:
         on_progress(100, "Saving spreadsheet…")
-    df = pd.DataFrame(all_rows)
+    df = pd.DataFrame(all_rows, columns=["Source PDF", "Page Number", "Product Name", "UPC", "MRP", "CS"])
 
-    # ── Merge rows with same Product Name + UPC + MRP ────────────────────────
-    product_col = next(
-        (c for c in df.columns if "product" in c.lower() and "name" in c.lower()), None)
-    upc_col = next(
-        (c for c in df.columns if c.lower().strip() in {"upc", "upc code", "barcode"}), None)
-    mrp_col = next(
-        (c for c in df.columns if c.lower().strip() in {"mrp", "m.r.p", "mrp rs"}), None)
+    df["MRP"] = pd.to_numeric(df["MRP"].astype(str).str.replace(",", "", regex=False), errors="coerce")
+    df["CS"]  = pd.to_numeric(df["CS"].astype(str).str.replace(",", "", regex=False),  errors="coerce").fillna(0)
 
-    group_keys = ["Source PDF"]
-    if product_col: group_keys.append(product_col)
-    if upc_col:     group_keys.append(upc_col)
-    if mrp_col:     group_keys.append(mrp_col)
+    before = len(df)
+    df = (
+        df.groupby(["Source PDF", "Product Name", "UPC", "MRP"], as_index=False)
+          .agg(
+              **{
+                  "Pages": ("Page Number",
+                            lambda s: ", ".join(str(p) for p in sorted(s.unique()))),
+                  "CS": ("CS", "sum"),
+              }
+          )
+    )
+    log(f"  → merged {before} rows → {len(df)} unique products")
 
-    if len(group_keys) > 1:
-        # Coerce numeric columns, keep text as-is
-        numeric_cols, text_cols = [], []
-        for c in df.columns:
-            if c in group_keys:
-                continue
-            converted = pd.to_numeric(
-                df[c].astype(str).str.replace(",", "", regex=False), errors="coerce")
-            if converted.notna().any():
-                df[c] = converted
-                numeric_cols.append(c)
-            else:
-                text_cols.append(c)
-
-        agg: dict[str, object] = {c: "sum" for c in numeric_cols}
-        agg.update({c: "first" for c in text_cols})
-        before = len(df)
-        df = df.groupby(group_keys, as_index=False).agg(agg)
-        log(f"  → merged {before} rows → {len(df)} unique products (grouped by name + UPC + MRP)")
-
-    cols = ["Source PDF"] + [c for c in df.columns if c != "Source PDF"]
-    df = df[cols]
+    df = df[["Source PDF", "Pages", "Product Name", "UPC", "MRP", "CS"]]
     out = Path("output")
     out.mkdir(exist_ok=True)
     outfile = out / "Extracted.xlsx"
