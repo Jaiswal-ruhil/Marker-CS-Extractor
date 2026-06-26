@@ -34,7 +34,7 @@ jobs:
       - name: Build Windows executable
         shell: cmd
         run: |
-          pyinstaller --onefile --name "MarkerCSExtractor-v${{ steps.set-version.outputs.version }}" --hidden-import pandas --hidden-import openpyxl --hidden-import openpyxl.styles --hidden-import openpyxl.utils --noconsole main.py
+          pyinstaller --onefile --name "MarkerCSExtractor" --hidden-import pandas --hidden-import openpyxl --hidden-import openpyxl.styles --hidden-import openpyxl.utils --noconsole main.py
 
       - name: Sign executable (self-signed — Ruhil Jaiswal)
         shell: powershell
@@ -47,7 +47,7 @@ jobs:
             -HashAlgorithm SHA256 `
             -NotAfter (Get-Date).AddYears(5)
           Set-AuthenticodeSignature `
-            -FilePath "dist\MarkerCSExtractor-v${{ steps.set-version.outputs.version }}.exe" `
+            -FilePath "dist\MarkerCSExtractor.exe" `
             -Certificate $cert `
             -HashAlgorithm SHA256
           Write-Host "Signed as: $($cert.Subject)"
@@ -59,26 +59,26 @@ jobs:
       - name: Upload Windows executable
         uses: actions/upload-artifact@v4
         with:
-          name: MarkerCSExtractor-Windows-v${{ steps.set-version.outputs.version }}
-          path: dist\MarkerCSExtractor-v${{ steps.set-version.outputs.version }}.exe
+          name: MarkerCSExtractor-Windows
+          path: dist\MarkerCSExtractor.exe
           retention-days: 30
 
       - name: Create Release (on push to main)
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ steps.set-version.outputs.version }}
-          name: "MarkerCSExtractor v${{ steps.set-version.outputs.version }}"
+          tag_name: build-${{ github.run_number }}
+          name: "Windows Build #${{ github.run_number }}"
           body: |
-            Automated Windows build of MarkerCSExtractor v${{ steps.set-version.outputs.version }} from commit ${{ github.sha }}
+            Automated Windows build from commit ${{ github.sha }}
 
             **Publisher:** Ruhil Jaiswal
 
             **How to use:**
-            1. Download `MarkerCSExtractor-v${{ steps.set-version.outputs.version }}.exe`
+            1. Download `MarkerCSExtractor.exe`
             2. If Windows SmartScreen appears, click **More info → Run anyway**
                (one-time only — self-signed certificate)
             3. Double-click to launch, or drag PDF files onto it
-          files: dist\MarkerCSExtractor-v${{ steps.set-version.outputs.version }}.exe
+          files: dist\MarkerCSExtractor.exe
           draft: false
           prerelease: false
