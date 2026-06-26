@@ -89,6 +89,40 @@ def process(pdfs, log=print, on_progress=None):
     if on_progress:
         on_progress(100, "Saving spreadsheet…")
     df = pd.DataFrame(all_rows)
+
+    # ── Merge rows with same Product Name + UPC + MRP ────────────────────────
+    product_col = next(
+        (c for c in df.columns if "product" in c.lower() and "name" in c.lower()), None)
+    upc_col = next(
+        (c for c in df.columns if c.lower().strip() in {"upc", "upc code", "barcode"}), None)
+    mrp_col = next(
+        (c for c in df.columns if c.lower().strip() in {"mrp", "m.r.p", "mrp rs"}), None)
+
+    group_keys = ["Source PDF"]
+    if product_col: group_keys.append(product_col)
+    if upc_col:     group_keys.append(upc_col)
+    if mrp_col:     group_keys.append(mrp_col)
+
+    if len(group_keys) > 1:
+        # Coerce numeric columns, keep text as-is
+        numeric_cols, text_cols = [], []
+        for c in df.columns:
+            if c in group_keys:
+                continue
+            converted = pd.to_numeric(
+                df[c].astype(str).str.replace(",", "", regex=False), errors="coerce")
+            if converted.notna().any():
+                df[c] = converted
+                numeric_cols.append(c)
+            else:
+                text_cols.append(c)
+
+        agg: dict[str, object] = {c: "sum" for c in numeric_cols}
+        agg.update({c: "first" for c in text_cols})
+        before = len(df)
+        df = df.groupby(group_keys, as_index=False).agg(agg)
+        log(f"  → merged {before} rows → {len(df)} unique products (grouped by name + UPC + MRP)")
+
     cols = ["Source PDF"] + [c for c in df.columns if c != "Source PDF"]
     df = df[cols]
     out = Path("output")
