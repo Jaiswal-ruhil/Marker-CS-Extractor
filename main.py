@@ -1,5 +1,9 @@
 import sys, threading
 from pathlib import Path
+
+VERSION = "0.1.0"
+__version__ = VERSION
+
 import pdfplumber
 import pandas as pd
 import tkinter as tk

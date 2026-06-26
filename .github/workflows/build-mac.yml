@@ -31,11 +31,22 @@ jobs:
           pip install -r requirements.txt
           pip install pyinstaller
 
+      - name: Set version
+        id: set-version
+        shell: pwsh
+        run: |
+          $content = Get-Content main.py -Raw
+          if ($content -match '^(?:__version__|VERSION)\s*=\s*"([^"]+)"') {
+            Write-Output "version=$($matches[1])" >> $env:GITHUB_OUTPUT
+          } else {
+            throw "Unable to parse version from main.py"
+          }
+
       - name: Build macOS executable
         run: |
           pyinstaller \
             --onefile \
-            --name "MarkerCSExtractor" \
+            --name "MarkerCSExtractor-v${{ steps.set-version.outputs.version }}" \
             --hidden-import pandas \
             --hidden-import openpyxl \
             --hidden-import openpyxl.styles \
@@ -45,7 +56,7 @@ jobs:
       - name: Verify build
         run: |
           ls -lh dist/
-          file dist/MarkerCSExtractor
+          file dist/MarkerCSExtractor-v${{ steps.set-version.outputs.version }}
 
       - name: Upload macOS executable
         uses: actions/upload-artifact@v4
