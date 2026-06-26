@@ -36,6 +36,22 @@ jobs:
         run: |
           pyinstaller --onefile --name "MarkerCSExtractor" --hidden-import pandas --hidden-import openpyxl --hidden-import openpyxl.styles --hidden-import openpyxl.utils --noconsole main.py
 
+      - name: Sign executable (self-signed — Ruhil Jaiswal)
+        shell: powershell
+        run: |
+          $cert = New-SelfSignedCertificate `
+            -Type CodeSigning `
+            -Subject "CN=Ruhil Jaiswal, O=Ruhil Jaiswal, L=India" `
+            -FriendlyName "Ruhil Jaiswal Code Signing" `
+            -CertStoreLocation Cert:\CurrentUser\My `
+            -HashAlgorithm SHA256 `
+            -NotAfter (Get-Date).AddYears(5)
+          Set-AuthenticodeSignature `
+            -FilePath "dist\MarkerCSExtractor.exe" `
+            -Certificate $cert `
+            -HashAlgorithm SHA256
+          Write-Host "Signed as: $($cert.Subject)"
+
       - name: Verify build
         shell: cmd
         run: dir dist\
@@ -56,11 +72,13 @@ jobs:
           body: |
             Automated Windows build from commit ${{ github.sha }}
 
+            **Publisher:** Ruhil Jaiswal
+
             **How to use:**
             1. Download `MarkerCSExtractor.exe`
-            2. Double-click it, or run from Command Prompt:
-               `MarkerCSExtractor.exe invoice.pdf`
-            Or drag-and-drop PDF files onto the executable in File Explorer.
+            2. If Windows SmartScreen appears, click **More info → Run anyway**
+               (one-time only — self-signed certificate)
+            3. Double-click to launch, or drag PDF files onto it
           files: dist\MarkerCSExtractor.exe
           draft: false
           prerelease: false
