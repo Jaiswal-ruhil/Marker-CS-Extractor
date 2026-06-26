@@ -86,7 +86,7 @@ def extract_from_pdf(pdf_path: Path, log, on_page=None):
     log(f"  → {len(rows_out)} rows in {pdf_path.name}")
     return rows_out
 
-def process(pdfs, log=print, on_progress=None):
+def process(pdfs, log=print, on_progress=None, save_path=None):
     total = len(pdfs)
     all_rows = []
     for idx, pdf in enumerate(pdfs):
@@ -123,9 +123,22 @@ def process(pdfs, log=print, on_progress=None):
     log(f"  → merged {before} rows → {len(df)} unique products")
 
     df = df[["Source PDF", "Pages", "Product Name", "UPC", "MRP", "CS"]]
-    out = Path("output")
-    out.mkdir(exist_ok=True)
-    outfile = out / "Extracted.xlsx"
+    if save_path is None:
+        default_name = (
+            pdfs[0].stem + "_CS_Extract.xlsx"
+            if len(pdfs) == 1
+            else "Combined_CS_Extract.xlsx"
+        )
+        save_path = filedialog.asksaveasfilename(
+            title="Save Excel File",
+            defaultextension=".xlsx",
+            initialfile=default_name,
+            filetypes=[("Excel Workbook", "*.xlsx")]
+        )
+        if not save_path:
+            log("⚠ Save cancelled.")
+            return None
+    outfile = Path(save_path)
     df.to_excel(outfile, index=False)
     log(f"✓  Saved → {outfile.resolve()}")
     return outfile
