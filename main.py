@@ -19,6 +19,19 @@ CS_NAMES = {"cs", "c/s", "case", "cases", "case qty", "case quantity"}
 SL_NAMES = {"sl", "sl.", "s.no", "sno", "sr", "sr.", "no", "no.", "#", "item"}
 TOTAL_KEYWORDS = {"total", "sub total", "subtotal", "grand total"}
 
+import re
+INVOICE_PATTERNS = [
+    re.compile(r"Bill\s*(?:No|NO|Number)?\s*:?\s*([A-Z0-9/-]+)", re.I),
+    re.compile(r"Invoice\s*(?:No|NO|Number)?\s*:?\s*([A-Z0-9/-]+)", re.I),
+]
+def extract_invoice_number(text):
+    for p in INVOICE_PATTERNS:
+        m=p.search(text or "")
+        if m:
+            return m.group(1).strip()
+    return ""
+
+
 # ── Core logic ────────────────────────────────────────────────────────────────
 
 def find_cs(headers):
@@ -47,12 +60,18 @@ def is_total_row(vals: list[str], sl_idx: int | None) -> bool:
 
 def extract_from_pdf(pdf_path: Path, log, on_page=None):
     rows_out = []
+    current_invoice = ""
 
     with pdfplumber.open(pdf_path) as pdf:
         total_pages = len(pdf.pages)
         for page_num, page in enumerate(pdf.pages, 1):
             if on_page:
                 on_page(page_num, total_pages)
+
+            page_text = page.extract_text() or ""
+            inv = extract_invoice_number(page_text)
+            if inv:
+                current_invoice = inv
 
             tables = page.extract_tables()
             for table in tables:
@@ -85,27 +104,26 @@ def extract_from_pdf(pdf_path: Path, log, on_page=None):
                         cs = 0
                     if cs > 0:
                         rows_out.append({
-                            "Source PDF":  pdf_path.name,
-                            "Page Number": page_num,
+                            "Invoice Number": current_invoice or pdf_path.stem,
                             "Product Name": vals[prod_idx] if prod_idx is not None else "",
                             "UPC":         vals[upc_idx]  if upc_idx  is not None else "",
                             "MRP":         vals[mrp_idx]  if mrp_idx  is not None else "",
                             "CS":          cs,
                         })
 
-    log(f"  → {len(rows_out)} rows in {pdf_path.name}")
+    log(f"✓ Found {len(rows_out)} CS rows in {pdf_path.name}")
     return rows_out
 
 def process(pdfs, log=print, on_progress=None, save_path=None, fmt="xlsx"):
     total = len(pdfs)
     all_rows = []
     for idx, pdf in enumerate(pdfs):
-        log(f"[{idx+1}/{total}] {pdf.name}")
+        log(f"ℹ Loading {pdf.name}")
         try:
             def on_page(page_num, total_pages, _idx=idx, _total=total):
                 if on_progress:
                     pct = ((_idx + page_num / total_pages) / _total) * 100
-                    on_progress(pct, f"{pdf.name}  ·  page {page_num} of {total_pages}")
+                    on_progress(pct, f"Processing file {_idx+1}/{_total} | {pdf.name} | Page {page_num}/{total_pages}")
             all_rows.extend(extract_from_pdf(pdf, log, on_page=on_page))
         except Exception as e:
             log(f"  ⚠  {e}")
@@ -115,25 +133,24 @@ def process(pdfs, log=print, on_progress=None, save_path=None, fmt="xlsx"):
     if on_progress:
         label = "Saving PDF…" if fmt == "pdf" else "Saving spreadsheet…"
         on_progress(100, label)
-    df = pd.DataFrame(all_rows, columns=["Source PDF", "Page Number", "Product Name", "UPC", "MRP", "CS"])
+    df = pd.DataFrame(all_rows, columns=["Invoice Number", "Product Name", "UPC", "MRP", "CS"])
 
     df["MRP"] = pd.to_numeric(df["MRP"].astype(str).str.replace(",", "", regex=False), errors="coerce")
     df["CS"]  = pd.to_numeric(df["CS"].astype(str).str.replace(",", "", regex=False),  errors="coerce").fillna(0)
 
     before = len(df)
     df = (
-        df.groupby(["Source PDF", "Product Name", "UPC", "MRP"], as_index=False)
+        df.groupby(["Product Name", "UPC", "MRP"], as_index=False)
           .agg(
               **{
-                  "Pages": ("Page Number",
-                            lambda s: ", ".join(str(p) for p in sorted(s.unique()))),
+                  "Invoice Numbers": ("Invoice Number", lambda s: ", ".join(sorted({str(v).strip() for v in s if str(v).strip() and str(v).lower() != "nan"}))),
                   "CS": ("CS", "sum"),
               }
           )
     )
     log(f"  → merged {before} rows → {len(df)} unique products")
 
-    df = df[["Source PDF", "Pages", "Product Name", "UPC", "MRP", "CS"]]
+    df = df[["Invoice Numbers", "Product Name", "UPC", "MRP", "CS"]]
     if save_path is None:
         if fmt == "pdf":
             default_name = (
@@ -168,7 +185,7 @@ def process(pdfs, log=print, on_progress=None, save_path=None, fmt="xlsx"):
         save_as_pdf(df, outfile, source_names)
     else:
         df.to_excel(outfile, index=False)
-    log(f"✓  Saved → {outfile.resolve()}")
+    log(f"✓ Saved → {outfile.resolve()}")
     return outfile
 
 def save_as_pdf(df, outfile, source_names):
@@ -212,7 +229,7 @@ def save_as_pdf(df, outfile, source_names):
     table_data = [header_row] + data_rows
 
     page_w = landscape(A4)[0] - 30*mm
-    col_ratios = [0.14, 0.07, 0.34, 0.14, 0.10, 0.08]
+    col_ratios = [0.20, 0.50, 0.10, 0.10, 0.10]
     col_widths = [page_w * r for r in col_ratios]
 
     tbl = Table(table_data, colWidths=col_widths, repeatRows=1)
@@ -268,13 +285,14 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("CS Extractor")
-        self.resizable(False, False)
+        self.resizable(True, True)
+        self.minsize(700, 700)
         self.configure(bg=BG)
         self._files: list[str] = []
         self._fmt_var = tk.StringVar(value="xlsx")
         self._build_ui()
         self.update_idletasks()
-        self.geometry(f"520x{self.winfo_reqheight()}")
+        self.geometry("820x760")
 
     # ── Layout ────────────────────────────────────────────────────────────────
 
@@ -304,10 +322,10 @@ class App(tk.Tk):
         self._drop = tk.Frame(outer, bg=CARD, bd=0)
         self._drop.pack(fill="both", padx=1, pady=1)
 
-        inner = tk.Frame(self._drop, bg=CARD, pady=24)
+        inner = tk.Frame(self._drop, bg=CARD, pady=12)
         inner.pack(fill="x")
 
-        self._icon_lbl = tk.Label(inner, text="⬆", font=("Segoe UI", 28),
+        self._icon_lbl = tk.Label(inner, text="⬆", font=("Segoe UI", 20),
                                   bg=CARD, fg=ACCENT)
         self._icon_lbl.pack()
 
@@ -334,14 +352,14 @@ class App(tk.Tk):
         # Scrollable canvas for file rows
         self._canvas = tk.Canvas(self._list_frame, bg=BG, bd=0,
                                  highlightthickness=0, height=0)
-        self._canvas.pack(fill="x")
+        self._canvas.pack(fill="both", expand=False)
         self._rows_frame = tk.Frame(self._canvas, bg=BG)
         self._canvas.create_window((0, 0), window=self._rows_frame, anchor="nw")
         self._rows_frame.bind("<Configure>", self._on_rows_resize)
 
     def _build_progress(self):
         prog_frame = tk.Frame(self, bg=BG)
-        prog_frame.pack(fill="x", padx=20, pady=(14, 0))
+        prog_frame.pack(fill="x", padx=20, pady=(10, 0))
 
         style = ttk.Style(self)
         style.theme_use("clam")
@@ -419,7 +437,7 @@ class App(tk.Tk):
 
     def _build_log(self):
         log_frame = tk.Frame(self, bg=SURFACE, bd=0)
-        log_frame.pack(fill="x", padx=20, pady=(14, 20))
+        log_frame.pack(fill="both", expand=True, padx=20, pady=(14,20))
 
         tk.Label(log_frame, text="Log", font=("Segoe UI", 9, "bold"),
                  bg=SURFACE, fg=MUTED, anchor="w",
@@ -429,14 +447,17 @@ class App(tk.Tk):
         sep.pack(fill="x")
 
         self._log = tk.Text(
-            log_frame, height=7,
+            log_frame, height=14,
             font=("Cascadia Code", 9) if self._font_exists("Cascadia Code")
                  else ("Courier New", 9),
             bg=SURFACE, fg=TEXT, insertbackground=TEXT,
             borderwidth=0, highlightthickness=0,
             padx=12, pady=10,
             state="disabled", wrap="word")
-        self._log.pack(fill="x")
+        scroll = tk.Scrollbar(log_frame, command=self._log.yview)
+        self._log.configure(yscrollcommand=scroll.set)
+        scroll.pack(side="right", fill="y")
+        self._log.pack(side="left", fill="both", expand=True)
 
         # Tag colours
         self._log.tag_config("ok",   foreground=SUCCESS)
