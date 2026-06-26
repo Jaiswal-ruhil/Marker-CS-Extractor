@@ -75,7 +75,7 @@ def extract_from_pdf(pdf_path: Path, log, on_page=None):
                         continue
                     try:
                         cs = float(vals[cs_idx].replace(",", ""))
-                    except:
+                    except (ValueError, AttributeError):
                         cs = 0
                     if cs > 0:
                         rows_out.append({
