@@ -22,6 +22,8 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: requirements.txt
 
       - name: Install dependencies
         run: |
@@ -34,7 +36,6 @@ jobs:
           pyinstaller \
             --onefile \
             --name "MarkerCSExtractor" \
-            --collect-all marker \
             --hidden-import pandas \
             --hidden-import openpyxl \
             --hidden-import openpyxl.styles \
@@ -64,7 +65,7 @@ jobs:
 
             **How to use:**
             1. Download `MarkerCSExtractor`
-            2. Run `chmod +x MarkerCSExtractor` in Terminal to make it executable
+            2. Run `chmod +x MarkerCSExtractor` in Terminal
             3. Run: `./MarkerCSExtractor invoice.pdf`
             Or drag-and-drop PDF files onto the executable in Finder.
           files: dist/MarkerCSExtractor
