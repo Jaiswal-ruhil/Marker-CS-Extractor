@@ -35,9 +35,16 @@ jobs:
         id: set-version
         shell: pwsh
         run: |
-          $content = Get-Content main.py -Raw
-          if ($content -match '^(?:__version__|VERSION)\s*=\s*"([^"]+)"') {
-            Write-Output "version=$($matches[1])" >> $env:GITHUB_OUTPUT
+          $lines = Get-Content main.py
+          $version = $null
+          foreach ($line in $lines) {
+            if ($line -match '^(?:__version__|VERSION)\s*=\s*"([^"]+)"') {
+              $version = $matches[1]
+              break
+            }
+          }
+          if ($version) {
+            Write-Output "version=$version" >> $env:GITHUB_OUTPUT
           } else {
             throw "Unable to parse version from main.py"
           }
