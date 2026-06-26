@@ -6,6 +6,8 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 CS_NAMES = {"cs", "c/s", "case", "cases", "case qty", "case quantity"}
+SL_NAMES = {"sl", "sl.", "s.no", "sno", "sr", "sr.", "no", "no.", "#", "item"}
+TOTAL_KEYWORDS = {"total", "sub total", "subtotal", "grand total"}
 
 # ── Core logic ────────────────────────────────────────────────────────────────
 
@@ -16,25 +18,47 @@ def find_cs(headers):
             return i
     return None
 
-def extract_from_pdf(pdf_path: Path, log):
+def find_sl(headers):
+    for i, h in enumerate(headers):
+        n = h.lower().strip().replace(".", "").replace("_", " ")
+        if n in SL_NAMES:
+            return i
+    return None
+
+def is_total_row(vals: list[str], sl_idx: int | None) -> bool:
+    # Total rows have an empty SL column
+    if sl_idx is not None and not vals[sl_idx].strip():
+        return True
+    # Or a cell literally says "total"
+    for v in vals:
+        if v.lower().strip() in TOTAL_KEYWORDS:
+            return True
+    return False
+
+def extract_from_pdf(pdf_path: Path, log, on_page=None):
     rows_out = []
     with pdfplumber.open(pdf_path) as pdf:
+        total_pages = len(pdf.pages)
         for page_num, page in enumerate(pdf.pages, 1):
+            if on_page:
+                on_page(page_num, total_pages)
             tables = page.extract_tables()
             for table in tables:
                 if not table or len(table) < 2:
                     continue
-                # First row = headers
                 headers = [str(c).strip() if c else f"Column_{i+1}"
                            for i, c in enumerate(table[0])]
                 cs_idx = find_cs(headers)
                 if cs_idx is None:
                     continue
+                sl_idx = find_sl(headers)
                 for row in table[1:]:
                     if not row:
                         continue
                     vals = [str(c).strip() if c else "" for c in row]
                     vals.extend([""] * (len(headers) - len(vals)))
+                    if is_total_row(vals, sl_idx):
+                        continue
                     rec = dict(zip(headers, vals))
                     try:
                         cs = float(str(rec[headers[cs_idx]]).replace(",", ""))
@@ -43,112 +67,250 @@ def extract_from_pdf(pdf_path: Path, log):
                     if cs > 0:
                         rec["Source PDF"] = pdf_path.name
                         rows_out.append(rec)
-    log(f"  → {len(rows_out)} rows found in {pdf_path.name}")
+    log(f"  → {len(rows_out)} rows in {pdf_path.name}")
     return rows_out
 
-def process(pdfs, log=print):
+def process(pdfs, log=print, on_progress=None):
+    total = len(pdfs)
     all_rows = []
-    for pdf in pdfs:
-        log(f"Processing {pdf.name}…")
+    for idx, pdf in enumerate(pdfs):
+        log(f"[{idx+1}/{total}] {pdf.name}")
         try:
-            all_rows.extend(extract_from_pdf(pdf, log))
+            def on_page(page_num, total_pages, _idx=idx, _total=total):
+                if on_progress:
+                    pct = ((_idx + page_num / total_pages) / _total) * 100
+                    on_progress(pct, f"{pdf.name}  ·  page {page_num} of {total_pages}")
+            all_rows.extend(extract_from_pdf(pdf, log, on_page=on_page))
         except Exception as e:
-            log(f"  ⚠ Error: {e}")
+            log(f"  ⚠  {e}")
     if not all_rows:
-        log("No matching CS rows found.")
+        log("No CS rows found.")
         return None
+    if on_progress:
+        on_progress(100, "Saving spreadsheet…")
     df = pd.DataFrame(all_rows)
+
+    # ── Merge rows with same Product Name + UPC + MRP ────────────────────────
+    product_col = next(
+        (c for c in df.columns if "product" in c.lower() and "name" in c.lower()), None)
+    upc_col = next(
+        (c for c in df.columns if c.lower().strip() in {"upc", "upc code", "barcode"}), None)
+    mrp_col = next(
+        (c for c in df.columns if c.lower().strip() in {"mrp", "m.r.p", "mrp rs"}), None)
+
+    group_keys = ["Source PDF"]
+    if product_col: group_keys.append(product_col)
+    if upc_col:     group_keys.append(upc_col)
+    if mrp_col:     group_keys.append(mrp_col)
+
+    if len(group_keys) > 1:
+        # Coerce numeric columns, keep text as-is
+        numeric_cols, text_cols = [], []
+        for c in df.columns:
+            if c in group_keys:
+                continue
+            converted = pd.to_numeric(
+                df[c].astype(str).str.replace(",", "", regex=False), errors="coerce")
+            if converted.notna().any():
+                df[c] = converted
+                numeric_cols.append(c)
+            else:
+                text_cols.append(c)
+
+        agg: dict[str, object] = {c: "sum" for c in numeric_cols}
+        agg.update({c: "first" for c in text_cols})
+        before = len(df)
+        df = df.groupby(group_keys, as_index=False).agg(agg)
+        log(f"  → merged {before} rows → {len(df)} unique products (grouped by name + UPC + MRP)")
+
     cols = ["Source PDF"] + [c for c in df.columns if c != "Source PDF"]
     df = df[cols]
     out = Path("output")
     out.mkdir(exist_ok=True)
     outfile = out / "Extracted.xlsx"
     df.to_excel(outfile, index=False)
-    log(f"✅ Saved: {outfile.resolve()}")
+    log(f"✓  Saved → {outfile.resolve()}")
     return outfile
+
+# ── Palette ───────────────────────────────────────────────────────────────────
+
+BG      = "#0f0f13"
+SURFACE = "#18181f"
+CARD    = "#1e1e28"
+BORDER  = "#2a2a38"
+ACCENT  = "#6c63ff"
+ACCENT2 = "#5a52d5"
+TEXT    = "#e8e8f0"
+MUTED   = "#7a7a94"
+SUCCESS = "#34d399"
+WARN    = "#fbbf24"
+ERR     = "#f87171"
 
 # ── GUI ───────────────────────────────────────────────────────────────────────
 
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Marker CS Extractor")
+        self.title("CS Extractor")
         self.resizable(False, False)
-        self.configure(bg="#1e1e2e")
-        self._files = []
+        self.configure(bg=BG)
+        self._files: list[str] = []
         self._build_ui()
+        self.update_idletasks()
+        self.geometry(f"520x{self.winfo_reqheight()}")
+
+    # ── Layout ────────────────────────────────────────────────────────────────
 
     def _build_ui(self):
-        PAD    = 16
-        BG     = "#1e1e2e"
-        CARD   = "#2a2a3d"
-        ACCENT = "#7c6af7"
-        TEXT   = "#cdd6f4"
-        SUBTEXT = "#6c7086"
+        self._build_header()
+        self._build_dropzone()
+        self._build_filelist()
+        self._build_progress()
+        self._build_actions()
+        self._build_log()
 
-        # Drop zone
-        self._drop_frame = tk.Frame(self, bg=CARD, bd=0, width=460, height=180)
-        self._drop_frame.pack(padx=PAD, pady=(PAD, 8))
-        self._drop_frame.pack_propagate(False)
+    def _build_header(self):
+        hdr = tk.Frame(self, bg=BG)
+        hdr.pack(fill="x", padx=20, pady=(20, 0))
+        tk.Label(hdr, text="CS Extractor", font=("Segoe UI", 16, "bold"),
+                 bg=BG, fg=TEXT).pack(side="left")
+        self._badge = tk.Label(hdr, text="0 files", font=("Segoe UI", 10),
+                               bg=CARD, fg=MUTED, padx=10, pady=3)
+        self._badge.pack(side="right", pady=4)
+        self._badge.configure(relief="flat")
 
-        tk.Label(self._drop_frame, text="📄", font=("Segoe UI Emoji", 36),
-                 bg=CARD, fg=TEXT).pack(pady=(28, 4))
-        self._drop_label = tk.Label(
-            self._drop_frame, text="Click to choose PDF files",
-            font=("Segoe UI", 12), bg=CARD, fg=SUBTEXT)
-        self._drop_label.pack()
+    def _build_dropzone(self):
+        outer = tk.Frame(self, bg=BORDER, bd=0)
+        outer.pack(fill="x", padx=20, pady=(12, 0))
 
-        for w in (self._drop_frame, self._drop_label):
+        self._drop = tk.Frame(outer, bg=CARD, bd=0)
+        self._drop.pack(fill="both", padx=1, pady=1)
+
+        inner = tk.Frame(self._drop, bg=CARD, pady=24)
+        inner.pack(fill="x")
+
+        self._icon_lbl = tk.Label(inner, text="⬆", font=("Segoe UI", 28),
+                                  bg=CARD, fg=ACCENT)
+        self._icon_lbl.pack()
+
+        self._drop_title = tk.Label(inner, text="Choose PDF files",
+                                    font=("Segoe UI", 12, "bold"),
+                                    bg=CARD, fg=TEXT)
+        self._drop_title.pack(pady=(6, 2))
+
+        self._drop_sub = tk.Label(inner, text="Click anywhere in this area to browse",
+                                  font=("Segoe UI", 9),
+                                  bg=CARD, fg=MUTED)
+        self._drop_sub.pack()
+
+        for w in (self._drop, inner, self._icon_lbl,
+                  self._drop_title, self._drop_sub):
             w.bind("<Button-1>", lambda e: self._pick_files())
-            w.bind("<Enter>",    lambda e: self._drop_frame.config(bg="#32324a"))
-            w.bind("<Leave>",    lambda e: self._drop_frame.config(bg=CARD))
+            w.bind("<Enter>",    lambda e: self._hover(True))
+            w.bind("<Leave>",    lambda e: self._hover(False))
 
-        # File list
-        self._list_var = tk.StringVar(value="")
-        self._listbox = tk.Listbox(
-            self, listvariable=self._list_var,
-            font=("Segoe UI", 10), bg=CARD, fg=TEXT,
-            selectbackground=ACCENT, activestyle="none",
-            borderwidth=0, highlightthickness=0, height=5)
-        self._listbox.pack(fill="x", padx=PAD, pady=(0, 8))
+    def _build_filelist(self):
+        self._list_frame = tk.Frame(self, bg=BG)
+        self._list_frame.pack(fill="x", padx=20, pady=(10, 0))
 
-        btn_row = tk.Frame(self, bg=BG)
-        btn_row.pack(fill="x", padx=PAD, pady=(0, 8))
-        tk.Button(btn_row, text="＋ Add more", font=("Segoe UI", 10),
-                  bg=CARD, fg=TEXT, activebackground="#32324a",
-                  activeforeground=TEXT, relief="flat", cursor="hand2",
-                  command=self._pick_files).pack(side="left")
-        tk.Button(btn_row, text="✕ Clear", font=("Segoe UI", 10),
-                  bg=CARD, fg=TEXT, activebackground="#32324a",
-                  activeforeground=TEXT, relief="flat", cursor="hand2",
-                  command=self._clear).pack(side="left", padx=8)
+        # Scrollable canvas for file rows
+        self._canvas = tk.Canvas(self._list_frame, bg=BG, bd=0,
+                                 highlightthickness=0, height=0)
+        self._canvas.pack(fill="x")
+        self._rows_frame = tk.Frame(self._canvas, bg=BG)
+        self._canvas.create_window((0, 0), window=self._rows_frame, anchor="nw")
+        self._rows_frame.bind("<Configure>", self._on_rows_resize)
 
-        # Progress bar
-        self._progress = ttk.Progressbar(self, mode="indeterminate", length=460)
-        self._progress.pack(padx=PAD, pady=(0, 8))
+    def _build_progress(self):
+        prog_frame = tk.Frame(self, bg=BG)
+        prog_frame.pack(fill="x", padx=20, pady=(14, 0))
+
         style = ttk.Style(self)
         style.theme_use("clam")
-        style.configure("TProgressbar", troughcolor=CARD,
-                        background=ACCENT, thickness=6)
+        style.configure("Thin.Horizontal.TProgressbar",
+                        troughcolor=CARD,
+                        background=ACCENT,
+                        thickness=4,
+                        borderwidth=0,
+                        relief="flat")
 
-        # Run button
+        self._progress_var = tk.DoubleVar(value=0.0)
+        self._progress = ttk.Progressbar(
+            prog_frame, style="Thin.Horizontal.TProgressbar",
+            mode="determinate", variable=self._progress_var, maximum=100)
+        self._progress.pack(fill="x")
+
+        self._status_var = tk.StringVar(value="")
+        self._status_lbl = tk.Label(prog_frame, textvariable=self._status_var,
+                                    font=("Segoe UI", 9), bg=BG, fg=MUTED,
+                                    anchor="w")
+        self._status_lbl.pack(fill="x", pady=(4, 0))
+
+    def _build_actions(self):
+        row = tk.Frame(self, bg=BG)
+        row.pack(fill="x", padx=20, pady=(12, 0))
+
         self._run_btn = tk.Button(
-            self, text="Extract CS Data",
-            font=("Segoe UI", 12, "bold"),
-            bg=ACCENT, fg="white",
-            activebackground="#6a5be0", activeforeground="white",
-            relief="flat", cursor="hand2", pady=10,
+            row, text="Extract CS data",
+            font=("Segoe UI", 11, "bold"),
+            bg=ACCENT, fg="white", activebackground=ACCENT2,
+            activeforeground="white", relief="flat",
+            cursor="hand2", height=2, padx=20,
             command=self._run)
-        self._run_btn.pack(fill="x", padx=PAD, pady=(0, 8))
+        self._run_btn.pack(side="left", fill="x", expand=True)
 
-        # Log
+        tk.Frame(row, width=8, bg=BG).pack(side="left")
+
+        self._clear_btn = tk.Button(
+            row, text="Clear",
+            font=("Segoe UI", 11),
+            bg=CARD, fg=MUTED, activebackground=BORDER,
+            activeforeground=TEXT, relief="flat",
+            cursor="hand2", height=2, padx=16,
+            command=self._clear)
+        self._clear_btn.pack(side="left")
+
+    def _build_log(self):
+        log_frame = tk.Frame(self, bg=SURFACE, bd=0)
+        log_frame.pack(fill="x", padx=20, pady=(14, 20))
+
+        tk.Label(log_frame, text="Log", font=("Segoe UI", 9, "bold"),
+                 bg=SURFACE, fg=MUTED, anchor="w",
+                 padx=12, pady=6).pack(fill="x")
+
+        sep = tk.Frame(log_frame, bg=BORDER, height=1)
+        sep.pack(fill="x")
+
         self._log = tk.Text(
-            self, height=6, font=("Courier New", 9),
-            bg=CARD, fg=TEXT, insertbackground=TEXT,
-            borderwidth=0, highlightthickness=0, state="disabled")
-        self._log.pack(fill="x", padx=PAD, pady=(0, PAD))
+            log_frame, height=7,
+            font=("Cascadia Code", 9) if self._font_exists("Cascadia Code")
+                 else ("Courier New", 9),
+            bg=SURFACE, fg=TEXT, insertbackground=TEXT,
+            borderwidth=0, highlightthickness=0,
+            padx=12, pady=10,
+            state="disabled", wrap="word")
+        self._log.pack(fill="x")
 
-        self.geometry(f"492x{self.winfo_reqheight()}")
+        # Tag colours
+        self._log.tag_config("ok",   foreground=SUCCESS)
+        self._log.tag_config("warn", foreground=WARN)
+        self._log.tag_config("err",  foreground=ERR)
+        self._log.tag_config("mute", foreground=MUTED)
+
+    # ── Helpers ───────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _font_exists(name: str) -> bool:
+        try:
+            tk.font.Font(family=name)  # type: ignore
+            return True
+        except Exception:
+            return False
+
+    def _hover(self, on: bool):
+        col = "#242432" if on else CARD
+        for w in (self._drop,):
+            w.configure(bg=col)
 
     def _pick_files(self):
         paths = filedialog.askopenfilenames(
@@ -162,53 +324,114 @@ class App(tk.Tk):
     def _clear(self):
         self._files.clear()
         self._refresh_list()
+        self._progress_var.set(0.0)
+        self._status_var.set("")
+
+    def _remove_file(self, path: str):
+        self._files.remove(path)
+        self._refresh_list()
 
     def _refresh_list(self):
-        names = [Path(f).name for f in self._files]
-        self._list_var.set("\n".join(names))
-        if names:
-            self._drop_label.config(
-                text=f"{len(names)} file{'s' if len(names) > 1 else ''} selected")
-        else:
-            self._drop_label.config(text="Click to choose PDF files")
+        for w in self._rows_frame.winfo_children():
+            w.destroy()
 
-    def _log_write(self, msg):
+        for path in self._files:
+            name = Path(path).name
+            row = tk.Frame(self._rows_frame, bg=CARD, pady=6, padx=10)
+            row.pack(fill="x", pady=(0, 2))
+
+            tk.Label(row, text="📄", font=("Segoe UI Emoji", 12),
+                     bg=CARD, fg=ACCENT).pack(side="left")
+
+            tk.Label(row, text=name, font=("Segoe UI", 10),
+                     bg=CARD, fg=TEXT, anchor="w").pack(side="left", padx=8, fill="x", expand=True)
+
+            rm = tk.Button(row, text="✕", font=("Segoe UI", 9),
+                           bg=CARD, fg=MUTED, activebackground=CARD,
+                           activeforeground=ERR, relief="flat",
+                           cursor="hand2",
+                           command=lambda p=path: self._remove_file(p))
+            rm.pack(side="right")
+
+        n = len(self._files)
+        # resize canvas
+        self._rows_frame.update_idletasks()
+        h = min(self._rows_frame.winfo_reqheight(), 160)
+        self._canvas.configure(height=h)
+
+        self._badge.configure(
+            text=f"{n} file{'s' if n != 1 else ''}",
+            fg=ACCENT if n else MUTED)
+
+        if n:
+            self._drop_title.configure(text=f"{n} file{'s' if n != 1 else ''} selected")
+            self._drop_sub.configure(text="Click to add more")
+        else:
+            self._drop_title.configure(text="Choose PDF files")
+            self._drop_sub.configure(text="Click anywhere in this area to browse")
+
+    def _on_rows_resize(self, _event=None):
+        h = min(self._rows_frame.winfo_reqheight(), 160)
+        self._canvas.configure(height=h)
+
+    def _log_write(self, msg: str):
+        if msg.startswith("✓") or msg.startswith("→"):
+            tag = "ok"
+        elif msg.startswith("⚠"):
+            tag = "err"
+        elif msg.startswith("["):
+            tag = "mute"
+        else:
+            tag = ""
         self._log.config(state="normal")
-        self._log.insert("end", msg + "\n")
+        self._log.insert("end", msg + "\n", tag)
         self._log.see("end")
         self._log.config(state="disabled")
 
+    def _on_progress(self, pct: float, status: str):
+        self.after(0, lambda: self._progress_var.set(pct))
+        self.after(0, lambda: self._status_var.set(status))
+
+    # ── Run ───────────────────────────────────────────────────────────────────
+
     def _run(self):
         if not self._files:
-            messagebox.showwarning("No files", "Please add at least one PDF.")
+            messagebox.showwarning("No files", "Add at least one PDF first.")
             return
-        self._run_btn.config(state="disabled")
-        self._progress.start(12)
-        self._log.config(state="normal")
+        self._run_btn.configure(state="disabled", text="Extracting…")
+        self._progress_var.set(0.0)
+        self._status_var.set("Starting…")
+        self._log.configure(state="normal")
         self._log.delete("1.0", "end")
-        self._log.config(state="disabled")
+        self._log.configure(state="disabled")
 
         pdfs = [Path(f) for f in self._files]
 
         def worker():
             try:
-                outfile = process(pdfs, log=self._log_write)
+                outfile = process(pdfs, log=self._log_write,
+                                  on_progress=self._on_progress)
                 if outfile:
+                    self.after(0, lambda: self._status_var.set(f"Done  ·  {outfile}"))
                     self.after(0, lambda: messagebox.showinfo(
-                        "Done", f"Saved to:\n{outfile.resolve()}"))
+                        "Extraction complete",
+                        f"Saved to:\n{outfile.resolve()}"))
                 else:
+                    self.after(0, lambda: self._status_var.set("No CS rows found"))
                     self.after(0, lambda: messagebox.showwarning(
-                        "No data", "No CS rows found in the selected PDFs."))
+                        "Nothing found",
+                        "No CS rows were found in the selected files."))
             except Exception as e:
                 self.after(0, lambda: messagebox.showerror("Error", str(e)))
+                self.after(0, lambda: self._status_var.set(f"Error: {e}"))
             finally:
                 self.after(0, self._done)
 
         threading.Thread(target=worker, daemon=True).start()
 
     def _done(self):
-        self._progress.stop()
-        self._run_btn.config(state="normal")
+        self._progress_var.set(100.0)
+        self._run_btn.configure(state="normal", text="Extract CS data")
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
