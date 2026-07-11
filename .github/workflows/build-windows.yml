@@ -34,7 +34,7 @@ jobs:
       - name: Build Windows executable
         shell: cmd
         run: |
-          pyinstaller --onefile --name "MarkerCSExtractor" --hidden-import pandas --hidden-import openpyxl --hidden-import openpyxl.styles --hidden-import openpyxl.utils --noconsole main.py
+          pyinstaller --onefile --name "MarkerCSExtractor" --add-data "logo.png;." --hidden-import pandas --hidden-import openpyxl --hidden-import openpyxl.styles --hidden-import openpyxl.utils --noconsole main.py
 
       - name: Sign executable (self-signed — Ruhil Jaiswal)
         shell: powershell

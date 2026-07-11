@@ -53,7 +53,8 @@ jobs:
         run: |
           pyinstaller \
             --onefile \
-            --name "MarkerCSExtractor-v${{ steps.set-version.outputs.version }}" \
+            --name "MarkerCSExtractor" \
+            --add-data "logo.png:." \
             --hidden-import pandas \
             --hidden-import openpyxl \
             --hidden-import openpyxl.styles \
@@ -63,7 +64,7 @@ jobs:
       - name: Verify build
         run: |
           ls -lh dist/
-          file dist/MarkerCSExtractor-v${{ steps.set-version.outputs.version }}
+          file dist/MarkerCSExtractor
 
       - name: Upload macOS executable
         uses: actions/upload-artifact@v4
@@ -84,7 +85,7 @@ jobs:
             **How to use:**
             1. Download `MarkerCSExtractor`
             2. Run `chmod +x MarkerCSExtractor` in Terminal
-            3. Run: `./MarkerCSExtractor invoice.pdf`
+            3. Run: `./MarkerCSExtractor`
             Or drag-and-drop PDF files onto the executable in Finder.
           files: dist/MarkerCSExtractor
           draft: false
