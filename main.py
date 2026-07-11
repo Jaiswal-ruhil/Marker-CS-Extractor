@@ -924,7 +924,7 @@ class NumberedCanvas(canvas.Canvas):
         if logo_path.exists():
             self.drawString(50, 25, "Developed by ")
             dev_w = self.stringWidth("Developed by ", "Helvetica", 8)
-            self.drawImage(str(logo_path), 50 + dev_w + 2, 24, width=20, height=20, mask='auto')
+            self.drawImage(str(logo_path), 50 + dev_w + 2, 24, width=20, height=18, mask='auto')
         
         # Render Table of Contents on its registered page
         toc_page = self.section_pages.get("Table of Contents")
